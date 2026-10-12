@@ -30,7 +30,6 @@
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import OpenAI from "openai";
 
 // ----------------------------------------------------------------------------
 // Config
@@ -142,7 +141,7 @@ function buildConversation(lines: Array<[string, string]>): string {
 }
 
 /**
- * Call the Gemini TTS generateContent endpoint using OpenAI client.
+ * Call the Gemini TTS Interactions API directly.
  * Returns the audio bytes + mime type.
  */
 async function synthesizeMultiSpeaker(
@@ -152,44 +151,109 @@ async function synthesizeMultiSpeaker(
   reporterVoice: string,
   text: string,
 ): Promise<{ mimeType: string; data: Buffer }> {
-  const client = new OpenAI({
-    apiKey: key,
-    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-  });
+  const url = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${key}`;
 
-  // Build the prompt with multi-speaker configuration
-  const conversationPrompt = `${text}
+  // Build the content with multi-speaker annotations
+  const content: Array<{
+    type: string;
+    text: string;
+    annotations?: Array<{
+      type: string;
+      speaker?: string;
+    }>;
+  }> = [];
 
-[Multi-speaker config]
-Speaker: 호스트, Voice: ${hostVoice}
-Speaker: 리포터, Voice: ${reporterVoice}`;
+  // Parse speaker lines and build annotated content
+  const lines = text.split("\n");
+  for (const line of lines) {
+    const hostMatch = line.match(/^호스트:\s*(.+)$/);
+    const reporterMatch = line.match(/^리포터:\s*(.+)$/);
 
-  const response = await client.chat.completions.create({
-    model: model,
-    messages: [
+    if (hostMatch) {
+      content.push({
+        type: "text",
+        text: hostMatch[1],
+        annotations: [
+          {
+            type: "speech_metadata",
+            speaker: "호스트",
+          },
+        ],
+      });
+    } else if (reporterMatch) {
+      content.push({
+        type: "text",
+        text: reporterMatch[1],
+        annotations: [
+          {
+            type: "speech_metadata",
+            speaker: "리포터",
+          },
+        ],
+      });
+    }
+  }
+
+  const payload = {
+    model,
+    input: [
       {
-        role: "user",
-        content: conversationPrompt,
+        type: "user_input",
+        content,
       },
     ],
-    max_tokens: 1024,
-  } as any);
+    response_format: {
+      type: "audio",
+    },
+    generation_config: {
+      speech_config: {
+        speakers: [
+          { speaker: "호스트", voice: hostVoice },
+          { speaker: "리포터", voice: reporterVoice },
+        ],
+      },
+    },
+  };
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error(`Gemini API returned no content: ${JSON.stringify(response)}`);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${response.status} status code (${text})`);
   }
 
-  // Attempt to decode as base64 audio data
-  try {
-    const audioData = Buffer.from(content, "base64");
-    return {
-      mimeType: "audio/wav",
-      data: audioData,
-    };
-  } catch {
-    throw new Error(`Failed to decode audio content or received text instead of audio: ${content.substring(0, 100)}`);
+  const responseJson = await response.json() as any;
+
+  // Extract audio from the response steps
+  let audioData: string | null = null;
+  if (responseJson.steps && Array.isArray(responseJson.steps)) {
+    for (const step of responseJson.steps) {
+      if (step.type === "model_output" && step.content) {
+        for (const content of step.content) {
+          if (content.type === "audio" && content.data) {
+            audioData = content.data;
+            break;
+          }
+        }
+        if (audioData) break;
+      }
+    }
   }
+
+  if (!audioData) {
+    throw new Error("Gemini API returned no audio data in response");
+  }
+
+  return {
+    mimeType: "audio/wav",
+    data: Buffer.from(audioData, "base64"),
+  };
 }
 
 /** Upload wav file to Oracle Cloud Object Storage (S3-compatible). */
