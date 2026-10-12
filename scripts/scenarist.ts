@@ -33,7 +33,7 @@ const DEFAULT_INPUT = path.join(WORK, "01_notice.md");
 const DEFAULT_OUTPUT = path.join(WORK, "03_news_scenario.md");
 
 // Gemini model to use. Override via GEMINI_MODEL or --model.
-const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
+const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.8-flash";
 
 function parseArgs(argv: string[]) {
   const args: { input: string; output: string; model: string } = {
@@ -118,13 +118,13 @@ async function main() {
   // 2. Initialize OpenAI client with Gemini API.
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.error("[scenarist] ERROR: GOOGLE_API_KEY environment variable not set");
+    console.error("[scenarist] ERROR: GEMINI_API_KEY environment variable not set");
     process.exit(1);
   }
 
   const client = new OpenAI({
     apiKey: apiKey,
-    baseURL: "https://generativelanguage.googleapis.com/openai/",
+    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
   });
 
   try {
@@ -132,7 +132,7 @@ async function main() {
     console.log(`[scenarist] sending scenarist prompt to ${args.model}...`);
     const prompt = buildPrompt(noticeMarkdown);
 
-    const response = await client.messages.create({
+    const response = await client.chat.completions.create({
       model: args.model,
       max_tokens: 4096,
       messages: [
@@ -144,19 +144,18 @@ async function main() {
     });
 
     // 4. Extract the generated scenario text.
-    const scenarioText =
-      response.content[0].type === "text" ? response.content[0].text : "";
+    const scenarioText = response.choices[0].message.content || "";
 
     if (!scenarioText) {
       throw new Error("No text content in response from Gemini");
     }
 
     // 5. Write the scenario to the output file.
-    const outputFile = path.join(args.output, "03_news_scenario.md");
-    await fsp.mkdir(args.output, { recursive: true });
-    await fsp.writeFile(outputFile, scenarioText, "utf8");
+    const outputDir = path.dirname(args.output);
+    await fsp.mkdir(outputDir, { recursive: true });
+    await fsp.writeFile(args.output, scenarioText, "utf8");
 
-    console.log(`[scenarist] DONE — wrote ${scenarioText.length} chars to ${outputFile}`);
+    console.log(`[scenarist] DONE — wrote ${scenarioText.length} chars to ${args.output}`);
   } catch (err) {
     console.error("[scenarist] ERROR:", err);
     process.exit(1);
