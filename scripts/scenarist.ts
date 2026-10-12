@@ -116,7 +116,7 @@ async function main() {
   console.log(`[scenarist] read ${noticeMarkdown.length} chars from ${args.input}`);
 
   // 2. Initialize OpenAI client with Gemini API.
-  const apiKey = process.env.GOOGLE_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.error("[scenarist] ERROR: GOOGLE_API_KEY environment variable not set");
     process.exit(1);
