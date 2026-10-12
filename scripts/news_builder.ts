@@ -40,7 +40,6 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORK = path.join(ROOT, "_workspace");
 const DEFAULT_INPUT = path.join(WORK, "03_news_scenario.md");
-const DEFAULT_OUTPUT_DIR = path.join(ROOT, "store");
 
 const DEFAULT_MODEL = "gemini-3.1-flash-tts-preview";
 const DEFAULT_HOST_VOICE = "Kore";
@@ -63,7 +62,6 @@ const BITS_PER_SAMPLE = 16;
 
 interface Options {
   input: string;
-  outputDir: string;
   model: string;
   hostVoice: string;
   reporterVoice: string;
@@ -76,7 +74,6 @@ interface Options {
 function parseArgs(argv: string[]): Options {
   const opts: Options = {
     input: DEFAULT_INPUT,
-    outputDir: DEFAULT_OUTPUT_DIR,
     model: process.env.GEMINI_TTS_MODEL ?? DEFAULT_MODEL,
     hostVoice: process.env.HOST_VOICE ?? DEFAULT_HOST_VOICE,
     reporterVoice: process.env.REPORTER_VOICE ?? DEFAULT_REPORTER_VOICE,
@@ -87,7 +84,6 @@ function parseArgs(argv: string[]): Options {
   };
   for (const a of argv) {
     if (a.startsWith("--input=")) opts.input = a.slice("--input=".length);
-    else if (a.startsWith("--output=")) opts.outputDir = a.slice("--output=".length);
     else if (a.startsWith("--model=")) opts.model = a.slice("--model=".length);
     else if (a.startsWith("--host-voice=")) opts.hostVoice = a.slice("--host-voice=".length);
     else if (a.startsWith("--reporter-voice=")) opts.reporterVoice = a.slice("--reporter-voice=".length);
@@ -372,10 +368,6 @@ async function main() {
 
   const lines = parseScenario(scenario);
   const prompt = buildConversation(lines);
-  const outPath = path.join(
-    opts.outputDir,
-    `${(await weekPrefix(opts.input)) ?? "full_news"}_full_news.wav`,
-  );
 
   console.log(
     `[news_builder] ${lines.length} speaker lines (${prompt.length} chars) → single multi-speaker TTS call`,
@@ -393,7 +385,7 @@ async function main() {
   );
   const wav = toWav(mimeType, data);
 
-  const filename = path.basename(outPath);
+  const filename = `${(await weekPrefix(opts.input)) ?? "full_news"}_full_news.wav`;
   const seconds = wav.subarray(44).length / (SAMPLE_RATE * 2);
   const result = await uploadToS3(wav, filename, opts);
   
