@@ -288,27 +288,32 @@ async function uploadToS3(
   wav: Buffer,
   filename: string,
   opts: Options,
-): Promise<string> {
-  const s3Client = new S3Client({
-    region: opts.s3Region,
-    endpoint: opts.s3Endpoint,
-    credentials: opts.s3AccessKey && opts.s3SecretKey ? {
-      accessKeyId: opts.s3AccessKey,
-      secretAccessKey: opts.s3SecretKey,
-    } : undefined,
-  });
+): Promise<{ success: boolean; url?: string; error?: string }> {
+  try {
+    const s3Client = new S3Client({
+      region: opts.s3Region,
+      endpoint: opts.s3Endpoint,
+      credentials: opts.s3AccessKey && opts.s3SecretKey ? {
+        accessKeyId: opts.s3AccessKey,
+        secretAccessKey: opts.s3SecretKey,
+      } : undefined,
+    });
 
-  const key = `${filename}`;
-  const command = new PutObjectCommand({
-    Bucket: opts.s3Bucket,
-    Key: key,
-    Body: wav,
-    ContentType: "audio/wav",
-  });
+    const key = `${filename}`;
+    const command = new PutObjectCommand({
+      Bucket: opts.s3Bucket,
+      Key: key,
+      Body: wav,
+      ContentType: "audio/wav",
+    });
 
-  await s3Client.send(command);
-  const url = `${opts.s3Endpoint}/${opts.s3Bucket}/${key}`;
-  return url;
+    await s3Client.send(command);
+    const url = `${opts.s3Endpoint}/${opts.s3Bucket}/${key}`;
+    return { success: true, url };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    return { success: false, error: errorMsg };
+  }
 }
 
 /** Synthesize, retrying transient API errors and honoring RetryInfo delays. */
@@ -385,19 +390,35 @@ async function main() {
 
   if (opts.useS3) {
     const filename = path.basename(outPath);
-    const url = await uploadToS3(wav, filename, opts);
     const seconds = wav.subarray(44).length / (SAMPLE_RATE * 2);
-    console.log(
-      `[news_builder] OK ${url} (${wav.length} bytes, ~${seconds.toFixed(1)}s, ${mimeType})`,
-    );
+    const result = await uploadToS3(wav, filename, opts);
+    
+    if (result.success && result.url) {
+      console.log(
+        `[news_builder] ✓ Storage upload SUCCESS: ${result.url} (${wav.length} bytes, ~${seconds.toFixed(1)}s, ${mimeType})`,
+      );
+    } else {
+      console.error(
+        `[news_builder] ✗ Storage upload FAILED: ${result.error}`,
+      );
+      process.exit(1);
+    }
   } else {
     await fsp.mkdir(opts.outputDir, { recursive: true });
-    fss.writeFileSync(outPath, wav);
-    const seconds = wav.subarray(44).length / (SAMPLE_RATE * 2);
-    const bytes = fss.statSync(outPath).size;
-    console.log(
-      `[news_builder] OK ${outPath} (${bytes} bytes, ~${seconds.toFixed(1)}s, ${mimeType})`,
-    );
+    try {
+      fss.writeFileSync(outPath, wav);
+      const seconds = wav.subarray(44).length / (SAMPLE_RATE * 2);
+      const bytes = fss.statSync(outPath).size;
+      console.log(
+        `[news_builder] ✓ Local storage SUCCESS: ${outPath} (${bytes} bytes, ~${seconds.toFixed(1)}s, ${mimeType})`,
+      );
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[news_builder] ✗ Local storage FAILED: ${errorMsg}`,
+      );
+      process.exit(1);
+    }
   }
 }
 
