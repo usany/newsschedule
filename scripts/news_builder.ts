@@ -33,8 +33,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import OpenAI from "openai";
 
 // ----------------------------------------------------------------------------
 // Config
@@ -50,9 +48,8 @@ const DEFAULT_REPORTER_VOICE = "Puck";
 
 // Oracle Cloud Object Storage (S3-compatible)
 // Note: When using Oracle Cloud pre-signed URLs, the endpoint already includes the namespace and bucket path.
-// In that case, set S3_BUCKET to empty string to avoid double-pathing.
+// In that case, set the endpoint correctly to avoid pathing issues.
 const DEFAULT_S3_ENDPOINT = "https://objectstorage.ap-chuncheon-1.oraclecloud.com";
-const DEFAULT_S3_BUCKET = "";
 const DEFAULT_S3_REGION = "ap-chuncheon-1";
 
 const WEEK_ORDINALS: Record<string, string> = {
@@ -69,9 +66,7 @@ interface Options {
   model: string;
   hostVoice: string;
   reporterVoice: string;
-  useS3: boolean;
   s3Endpoint: string;
-  s3Bucket: string;
   s3Region: string;
   s3AccessKey?: string;
   s3SecretKey?: string;
@@ -84,9 +79,7 @@ function parseArgs(argv: string[]): Options {
     model: process.env.GEMINI_TTS_MODEL ?? DEFAULT_MODEL,
     hostVoice: process.env.HOST_VOICE ?? DEFAULT_HOST_VOICE,
     reporterVoice: process.env.REPORTER_VOICE ?? DEFAULT_REPORTER_VOICE,
-    useS3: true,
     s3Endpoint: process.env.S3_ENDPOINT ?? DEFAULT_S3_ENDPOINT,
-    s3Bucket: process.env.S3_BUCKET ?? DEFAULT_S3_BUCKET,
     s3Region: process.env.S3_REGION ?? DEFAULT_S3_REGION,
     s3AccessKey: process.env.S3_ACCESS_KEY,
     s3SecretKey: process.env.S3_SECRET_KEY,
@@ -97,9 +90,7 @@ function parseArgs(argv: string[]): Options {
     else if (a.startsWith("--model=")) opts.model = a.slice("--model=".length);
     else if (a.startsWith("--host-voice=")) opts.hostVoice = a.slice("--host-voice=".length);
     else if (a.startsWith("--reporter-voice=")) opts.reporterVoice = a.slice("--reporter-voice=".length);
-    else if (a.startsWith("--use-s3")) opts.useS3 = true;
     else if (a.startsWith("--s3-endpoint=")) opts.s3Endpoint = a.slice("--s3-endpoint=".length);
-    else if (a.startsWith("--s3-bucket=")) opts.s3Bucket = a.slice("--s3-bucket=".length);
     else if (a.startsWith("--s3-region=")) opts.s3Region = a.slice("--s3-region=".length);
   }
   return opts;
@@ -181,7 +172,7 @@ function wavHeader(pcmLength: number): Buffer {
 }
 
 /**
- * Call the Gemini TTS generateContent endpoint using OpenAI SDK.
+ * Call the Gemini TTS generateContent endpoint.
  * Returns the audio bytes + mime type.
  */
 async function synthesizeMultiSpeaker(
@@ -191,11 +182,6 @@ async function synthesizeMultiSpeaker(
   reporterVoice: string,
   text: string,
 ): Promise<{ mimeType: string; data: Buffer }> {
-  const client = new OpenAI({
-    apiKey: key,
-    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-  });
-
   const payload = {
     contents: [{ parts: [{ text }] }],
     generationConfig: {
@@ -313,26 +299,19 @@ async function uploadToS3(
       const url = endpoint.endsWith("/") ? endpoint + filename : endpoint + "/" + filename;
       return { success: true, url };
     } else {
-      // Standard S3 API client approach
-      const s3Client = new S3Client({
-        region: opts.s3Region,
-        endpoint: endpoint,
-        credentials: opts.s3AccessKey && opts.s3SecretKey ? {
-          accessKeyId: opts.s3AccessKey,
-          secretAccessKey: opts.s3SecretKey,
-        } : undefined,
+      // For non-pre-signed URLs, use fetch with the endpoint
+      const uploadUrl = endpoint.endsWith("/") ? endpoint + filename : endpoint + "/" + filename;
+      const response = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: wav,
       });
 
-      const key = `${filename}`;
-      const command = new PutObjectCommand({
-        Bucket: opts.s3Bucket,
-        Key: key,
-        Body: wav,
-        ContentType: "audio/wav",
-      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
 
-      await s3Client.send(command);
-      const url = `${opts.s3Endpoint}/${opts.s3Bucket}/${key}`;
+      const url = uploadUrl;
       return { success: true, url };
     }
   } catch (err) {
@@ -413,37 +392,19 @@ async function main() {
   );
   const wav = toWav(mimeType, data);
 
-  if (opts.useS3) {
-    const filename = path.basename(outPath);
-    const seconds = wav.subarray(44).length / (SAMPLE_RATE * 2);
-    const result = await uploadToS3(wav, filename, opts);
-    
-    if (result.success && result.url) {
-      console.log(
-        `[news_builder] ✓ Storage upload SUCCESS: ${result.url} (${wav.length} bytes, ~${seconds.toFixed(1)}s, ${mimeType})`,
-      );
-    } else {
-      console.error(
-        `[news_builder] ✗ Storage upload FAILED: ${result.error}`,
-      );
-      process.exit(1);
-    }
+  const filename = path.basename(outPath);
+  const seconds = wav.subarray(44).length / (SAMPLE_RATE * 2);
+  const result = await uploadToS3(wav, filename, opts);
+  
+  if (result.success && result.url) {
+    console.log(
+      `[news_builder] ✓ Storage upload SUCCESS: ${result.url} (${wav.length} bytes, ~${seconds.toFixed(1)}s, ${mimeType})`,
+    );
   } else {
-    await fsp.mkdir(opts.outputDir, { recursive: true });
-    try {
-      fss.writeFileSync(outPath, wav);
-      const seconds = wav.subarray(44).length / (SAMPLE_RATE * 2);
-      const bytes = fss.statSync(outPath).size;
-      console.log(
-        `[news_builder] ✓ Local storage SUCCESS: ${outPath} (${bytes} bytes, ~${seconds.toFixed(1)}s, ${mimeType})`,
-      );
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(
-        `[news_builder] ✗ Local storage FAILED: ${errorMsg}`,
-      );
-      process.exit(1);
-    }
+    console.error(
+      `[news_builder] ✗ Storage upload FAILED: ${result.error}`,
+    );
+    process.exit(1);
   }
 }
 
