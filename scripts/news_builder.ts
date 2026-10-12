@@ -54,6 +54,7 @@ const DEFAULT_S3_REGION = "ap-chuncheon-1";
 
 const WEEK_ORDINALS: Record<string, string> = {
   첫째: "w1", 둘째: "w2", 셋째: "w3", 넷째: "w4", 다섯째: "w5", 여섯째: "w6",
+  "1째": "w1", "2째": "w2", "3째": "w3", "4째": "w4", "5째": "w5", "6째": "w6",
 };
 
 const SAMPLE_RATE = 24000;
