@@ -34,6 +34,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import OpenAI from "openai";
 
 // ----------------------------------------------------------------------------
 // Config
@@ -178,7 +179,7 @@ function wavHeader(pcmLength: number): Buffer {
 }
 
 /**
- * Call the Gemini TTS generateContent endpoint with multi-speaker voice config.
+ * Call the Gemini TTS generateContent endpoint using OpenAI SDK.
  * Returns the audio bytes + mime type.
  */
 async function synthesizeMultiSpeaker(
@@ -188,9 +189,10 @@ async function synthesizeMultiSpeaker(
   reporterVoice: string,
   text: string,
 ): Promise<{ mimeType: string; data: Buffer }> {
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}` +
-    `:generateContent?key=${encodeURIComponent(key)}`;
+  const client = new OpenAI({
+    apiKey: key,
+    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  });
 
   const payload = {
     contents: [{ parts: [{ text }] }],
@@ -213,11 +215,17 @@ async function synthesizeMultiSpeaker(
     },
   };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const res = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+      encodeURIComponent(model) +
+      ":generateContent?key=" +
+      encodeURIComponent(key),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
 
   if (!res.ok) {
     throw new Error(`Gemini API HTTP ${res.status}: ${await res.text()}`);
