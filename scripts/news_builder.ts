@@ -49,8 +49,10 @@ const DEFAULT_HOST_VOICE = "Kore";
 const DEFAULT_REPORTER_VOICE = "Puck";
 
 // Oracle Cloud Object Storage (S3-compatible)
+// Note: When using Oracle Cloud pre-signed URLs, the endpoint already includes the namespace and bucket path.
+// In that case, set S3_BUCKET to empty string to avoid double-pathing.
 const DEFAULT_S3_ENDPOINT = "https://objectstorage.ap-chuncheon-1.oraclecloud.com";
-const DEFAULT_S3_BUCKET = "bucket-20261002-1841";
+const DEFAULT_S3_BUCKET = "";
 const DEFAULT_S3_REGION = "ap-chuncheon-1";
 
 const WEEK_ORDINALS: Record<string, string> = {
@@ -82,7 +84,7 @@ function parseArgs(argv: string[]): Options {
     model: process.env.GEMINI_TTS_MODEL ?? DEFAULT_MODEL,
     hostVoice: process.env.HOST_VOICE ?? DEFAULT_HOST_VOICE,
     reporterVoice: process.env.REPORTER_VOICE ?? DEFAULT_REPORTER_VOICE,
-    useS3: process.env.USE_S3 === "true",
+    useS3: true,
     s3Endpoint: process.env.S3_ENDPOINT ?? DEFAULT_S3_ENDPOINT,
     s3Bucket: process.env.S3_BUCKET ?? DEFAULT_S3_BUCKET,
     s3Region: process.env.S3_REGION ?? DEFAULT_S3_REGION,
@@ -290,26 +292,49 @@ async function uploadToS3(
   opts: Options,
 ): Promise<{ success: boolean; url?: string; error?: string }> {
   try {
-    const s3Client = new S3Client({
-      region: opts.s3Region,
-      endpoint: opts.s3Endpoint,
-      credentials: opts.s3AccessKey && opts.s3SecretKey ? {
-        accessKeyId: opts.s3AccessKey,
-        secretAccessKey: opts.s3SecretKey,
-      } : undefined,
-    });
+    // If S3_ENDPOINT from .env is a pre-signed URL, use it directly
+    const endpoint = opts.s3Endpoint;
+    const isPresignedUrl = endpoint.includes("/p/") && endpoint.includes("/n/");
+    
+    if (isPresignedUrl) {
+      // Oracle Cloud pre-signed URL: append filename to the endpoint
+      const uploadUrl = endpoint.endsWith("/") ? endpoint + filename : endpoint + "/" + filename;
+      const response = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: wav,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
+      
+      // Return the URL without the trailing filename since the pre-signed URL is already the bucket path
+      const url = endpoint.endsWith("/") ? endpoint + filename : endpoint + "/" + filename;
+      return { success: true, url };
+    } else {
+      // Standard S3 API client approach
+      const s3Client = new S3Client({
+        region: opts.s3Region,
+        endpoint: endpoint,
+        credentials: opts.s3AccessKey && opts.s3SecretKey ? {
+          accessKeyId: opts.s3AccessKey,
+          secretAccessKey: opts.s3SecretKey,
+        } : undefined,
+      });
 
-    const key = `${filename}`;
-    const command = new PutObjectCommand({
-      Bucket: opts.s3Bucket,
-      Key: key,
-      Body: wav,
-      ContentType: "audio/wav",
-    });
+      const key = `${filename}`;
+      const command = new PutObjectCommand({
+        Bucket: opts.s3Bucket,
+        Key: key,
+        Body: wav,
+        ContentType: "audio/wav",
+      });
 
-    await s3Client.send(command);
-    const url = `${opts.s3Endpoint}/${opts.s3Bucket}/${key}`;
-    return { success: true, url };
+      await s3Client.send(command);
+      const url = `${opts.s3Endpoint}/${opts.s3Bucket}/${key}`;
+      return { success: true, url };
+    }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     return { success: false, error: errorMsg };
