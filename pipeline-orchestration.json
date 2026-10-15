@@ -5,7 +5,7 @@
     {
       "id": 1,
       "name": "crawling KHU notice board (collector + ocr-director)",
-      "script": "dist/scripts/khu_crawler.js",
+      "script": "scripts/khu_crawler.ts",
       "args": [],
       "outputs": [
         {
@@ -21,7 +21,7 @@
     {
       "id": 2,
       "name": "writing radio news scenario (scenarist)",
-      "script": "dist/scripts/scenarist.js",
+      "script": "scripts/scenarist.ts",
       "args": [],
       "outputs": [
         {
@@ -33,7 +33,7 @@
     {
       "id": 3,
       "name": "synthesizing full news audio (news-builder)",
-      "script": "dist/scripts/news_builder.js",
+      "script": "scripts/news_builder.ts",
       "args": [],
       "outputs": [
         {
