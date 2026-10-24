@@ -31,7 +31,6 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // ----------------------------------------------------------------------------
 // Config
@@ -45,10 +44,10 @@ const DEFAULT_HOST_VOICE = "Kore";
 const DEFAULT_REPORTER_VOICE = "Puck";
 const DEFAULT_OUTPUT_DIR = path.join(ROOT, "store");
 
-// Oracle Cloud Object Storage (S3-compatible)
-const DEFAULT_S3_ENDPOINT = "https://objectstorage.ap-chuncheon-1.oraclecloud.com";
-const DEFAULT_S3_BUCKET = "";
-const DEFAULT_S3_REGION = "ap-chuncheon-1";
+// Oracle Cloud Object Storage pre-authenticated request (PAR) URL.
+// When set (via env `S3_ENDPOINT`), the audio is PUT directly to this
+// pre-signed URL (`.../o/<filename>`). No bucket or credentials needed.
+const DEFAULT_S3_ENDPOINT = "";
 
 const WEEK_ORDINALS: Record<string, string> = {
   첫째: "w1", 둘째: "w2", 셋째: "w3", 넷째: "w4", 다섯째: "w5", 여섯째: "w6",
@@ -61,12 +60,7 @@ interface Options {
   model: string;
   hostVoice: string;
   reporterVoice: string;
-  useS3: boolean;
   s3Endpoint: string;
-  s3Bucket: string;
-  s3Region: string;
-  s3AccessKey?: string;
-  s3SecretKey?: string;
 }
 
 function parseArgs(argv: string[]): Options {
@@ -76,12 +70,7 @@ function parseArgs(argv: string[]): Options {
     model: process.env.GEMINI_TTS_MODEL ?? DEFAULT_MODEL,
     hostVoice: process.env.HOST_VOICE ?? DEFAULT_HOST_VOICE,
     reporterVoice: process.env.REPORTER_VOICE ?? DEFAULT_REPORTER_VOICE,
-    useS3: process.env.USE_S3 === "true",
     s3Endpoint: process.env.S3_ENDPOINT ?? DEFAULT_S3_ENDPOINT,
-    s3Bucket: process.env.S3_BUCKET ?? DEFAULT_S3_BUCKET,
-    s3Region: process.env.S3_REGION ?? DEFAULT_S3_REGION,
-    s3AccessKey: process.env.S3_ACCESS_KEY,
-    s3SecretKey: process.env.S3_SECRET_KEY,
   };
   for (const a of argv) {
     if (a.startsWith("--input=")) opts.input = a.slice("--input=".length);
@@ -89,10 +78,7 @@ function parseArgs(argv: string[]): Options {
     else if (a.startsWith("--model=")) opts.model = a.slice("--model=".length);
     else if (a.startsWith("--host-voice=")) opts.hostVoice = a.slice("--host-voice=".length);
     else if (a.startsWith("--reporter-voice=")) opts.reporterVoice = a.slice("--reporter-voice=".length);
-    else if (a.startsWith("--use-s3")) opts.useS3 = true;
     else if (a.startsWith("--s3-endpoint=")) opts.s3Endpoint = a.slice("--s3-endpoint=".length);
-    else if (a.startsWith("--s3-bucket=")) opts.s3Bucket = a.slice("--s3-bucket=".length);
-    else if (a.startsWith("--s3-region=")) opts.s3Region = a.slice("--s3-region=".length);
   }
   return opts;
 }
@@ -267,30 +253,30 @@ async function synthesizeMultiSpeaker(
   };
 }
 
-/** Upload wav file to Oracle Cloud Object Storage (S3-compatible). */
+/**
+ * Upload wav file to an Oracle Cloud Object Storage pre-authenticated
+ * request (PAR) URL. The endpoint is a pre-signed URL ending in `/o/`,
+ * so we simply PUT the audio to `<endpoint><filename>`.
+ */
 async function uploadToS3(
   wav: Buffer,
   filename: string,
-  opts: Options,
+  endpoint: string,
 ): Promise<string> {
-  const s3Client = new S3Client({
-    region: opts.s3Region,
-    endpoint: opts.s3Endpoint,
-    credentials:
-      opts.s3AccessKey && opts.s3SecretKey
-        ? { accessKeyId: opts.s3AccessKey, secretAccessKey: opts.s3SecretKey }
-        : undefined,
+  const base = endpoint.endsWith("/") ? endpoint : endpoint + "/";
+  const uploadUrl = base + filename;
+
+  const response = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": "audio/wav" },
+    body: new Uint8Array(wav),
   });
 
-  const command = new PutObjectCommand({
-    Bucket: opts.s3Bucket,
-    Key: filename,
-    Body: wav,
-    ContentType: "audio/wav",
-  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+  }
 
-  await s3Client.send(command);
-  return `${opts.s3Endpoint}/${opts.s3Bucket}/${filename}`;
+  return uploadUrl;
 }
 
 /** Synthesize, retrying transient API errors and honoring RetryInfo delays. */
@@ -362,8 +348,8 @@ async function main() {
 
   const filename = `${(await weekPrefix(opts.input)) ?? "full_news"}_full_news.wav`;
 
-  if (opts.useS3) {
-    const url = await uploadToS3(data, filename, opts);
+  if (opts.s3Endpoint) {
+    const url = await uploadToS3(data, filename, opts.s3Endpoint);
     console.log(
       `[news_builder] ✓ Storage upload SUCCESS: ${url} (${data.length} bytes, ${mimeType})`,
     );
