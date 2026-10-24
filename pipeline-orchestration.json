@@ -38,7 +38,7 @@
       "outputs": [
         {
           "desc": "full news audio",
-          "path": "_workspace/04_news_files/*_full_news.wav"
+          "path": "store/*_full_news.wav"
         }
       ]
     }
