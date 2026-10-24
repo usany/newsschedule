@@ -8,7 +8,7 @@
  *   2. Visits each notice detail page, extracts title / date / author / body text,
  *      and downloads any embedded content images to `_workspace/01_notice_images/`.
  *   3. For notices that HAVE images, runs easyocr (ko,en) via scripts/easyocr_helper.py
- *      and records the OCR text in `_workspace/02_ocr_results.md`.
+ *      and embeds the OCR text directly into `_workspace/01_notice.md`.
  *   4. Writes `_workspace/01_notice.md` and `_workspace/01_scraping_report.md`.
  *
  * Run (from repo root):
@@ -34,7 +34,6 @@ const IMG_DIR = path.join(WORK, "01_notice_images");
 const NOTICE_MD = path.join(WORK, "01_notice.md");
 const NOTICE_JSON = path.join(WORK, "01_notice.json");
 const SCRAPE_MD = path.join(WORK, "01_scraping_report.md");
-const OCR_MD = path.join(WORK, "02_ocr_results.md");
 const HELPER = path.join(ROOT, "scripts", "easyocr_helper.py");
 const PYTHON = process.env.PYTHON ?? "python3";
 
@@ -308,7 +307,11 @@ async function writeNoticeJson(week: { mon: string; fri: string }, notices: Noti
   await fsp.writeFile(NOTICE_JSON, JSON.stringify(payload, null, 2), "utf8");
 }
 
-async function writeNoticeMd(week: { mon: string; fri: string }, notices: Notice[]) {
+async function writeNoticeMd(
+  week: { mon: string; fri: string },
+  notices: Notice[],
+  ocrByFile: Map<string, OcrResult>,
+) {
   const lines: string[] = [];
   lines.push(`# 경희대학교 공지사항 (${week.mon} ~ ${week.fri})`);
   lines.push("");
@@ -334,6 +337,14 @@ async function writeNoticeMd(week: { mon: string; fri: string }, notices: Notice
       if (n.images.length) {
         lines.push(`- 포함 이미지: ${n.images.map((i) => i.file).join(", ")}`);
         lines.push("");
+        for (const img of n.images) {
+          const r = ocrByFile.get(img.file);
+          lines.push(`- ${img.file} OCR 텍스트:`);
+          lines.push("```");
+          lines.push(r?.text ?? "[OCR 실패 또는 텍스트 없음]");
+          lines.push("```");
+          lines.push("");
+        }
       }
     }
   }
@@ -361,35 +372,6 @@ async function writeScrapeMd(week: { mon: string; fri: string }, notices: Notice
     );
   }
   await fsp.writeFile(SCRAPE_MD, lines.join("\n"), "utf8");
-}
-
-async function writeOcrMd(week: { mon: string; fri: string }, notices: Notice[], ocrByFile: Map<string, OcrResult>) {
-  const imgNotices = notices.filter((n) => n.images.length);
-  const lines: string[] = [];
-  lines.push(`# OCR 결과 (${week.mon} ~ ${week.fri} 주차)`);
-  lines.push("");
-  lines.push(
-    `> 작성일: ${toDateStr(new Date())} | easyocr (ko, en) | easyocr는 이미지의 텍스트를 위치 순서대로 반환하며, 이미지 포스터 특성상 일부 조각난/오인식 글자(수기, 그림 겹침)가 포함될 수 있음.`,
-  );
-  lines.push("");
-  if (imgNotices.length === 0) {
-    lines.push("이번 주 수집 공지 중 이미지를 포함한 공지가 없습니다.");
-    await fsp.writeFile(OCR_MD, lines.join("\n"), "utf8");
-    return;
-  }
-  for (const n of imgNotices) {
-    lines.push(`## ${n.boardId} — ${stripRegion(n.title)}`);
-    for (const img of n.images) {
-      const r = ocrByFile.get(img.file);
-      lines.push(`- 이미지: ${img.file}`);
-      lines.push(`- OCR 텍스트:`);
-      lines.push("```");
-      lines.push(r?.text ?? "[OCR 실패 또는 텍스트 없음]");
-      lines.push("```");
-      lines.push("");
-    }
-  }
-  await fsp.writeFile(OCR_MD, lines.join("\n"), "utf8");
 }
 
 // ----------------------------------------------------------------------------
@@ -472,12 +454,7 @@ async function main() {
 
   await browser.close();
 
-  // Write scraping outputs
-  await writeNoticeMd(wk, notices);
-  await writeNoticeJson(wk, notices);
-  await writeScrapeMd(wk, notices);
-
-  // OCR the images (one python process for the whole batch)
+  // OCR the images first so the notice markdown can embed the results
   const ocrByFile = new Map<string, OcrResult>();
   if (ocr) {
     const allImages = notices
@@ -495,7 +472,11 @@ async function main() {
       }
     }
   }
-  await writeOcrMd(wk, notices, ocrByFile);
+
+  // Write scraping outputs (OCR text is embedded directly in the notice md)
+  await writeNoticeMd(wk, notices, ocrByFile);
+  await writeNoticeJson(wk, notices);
+  await writeScrapeMd(wk, notices);
 
   console.log(`[crawler] done. ${notices.length} notices written to ${NOTICE_MD} and ${NOTICE_JSON}`);
 }
