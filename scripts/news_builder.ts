@@ -105,13 +105,16 @@ async function loadApiKey(): Promise<string | null> {
   return null;
 }
 
-/** Derive the week prefix like `2026_08_w2` from the scenario's first line. */
+/** Derive the week prefix like `2026_10_w4` from the scenario's title line. */
 async function weekPrefix(scenarioPath: string): Promise<string | null> {
   try {
-    const first = (await fsp.readFile(scenarioPath, "utf8")).split("\n", 1)[0];
-    const m = first.match(/(\d{4})년\s*(\d{1,2})월\s*([가-힣]+) 주/);
+    const text = await fsp.readFile(scenarioPath, "utf8");
+    // Match titles like "2026년 10월 4째 주" or "2026년 8월 둘째 주".
+    const m = text.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2}째|[가-힣]+) ?주/);
     if (m) {
-      const w = WEEK_ORDINALS[m[3]] ?? "w1";
+      const ord = m[3];
+      const numMatch = ord.match(/^(\d{1,2})/);
+      const w = numMatch ? `w${numMatch[1]}` : WEEK_ORDINALS[ord] ?? "w1";
       return `${m[1]}_${String(parseInt(m[2], 10)).padStart(2, "0")}_${w}`;
     }
   } catch {
