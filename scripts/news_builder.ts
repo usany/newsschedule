@@ -27,9 +27,11 @@
  *   npx tsx scripts/news_builder.mts --host-voice=Kore --reporter-voice=Puck
  *   npx tsx scripts/news_builder.mts --input=... --output=...
  */
+import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // ----------------------------------------------------------------------------
 // Config
@@ -38,14 +40,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORK = path.join(ROOT, "_workspace");
 const DEFAULT_INPUT = path.join(WORK, "03_news_scenario.md");
 
-const DEFAULT_MODEL = "gemini-3.1-flash-tts-preview";
+const DEFAULT_MODEL = "gemini-3.8-flash-lite-tts";
 const DEFAULT_HOST_VOICE = "Kore";
 const DEFAULT_REPORTER_VOICE = "Puck";
+const DEFAULT_OUTPUT_DIR = path.join(ROOT, "store");
 
 // Oracle Cloud Object Storage (S3-compatible)
-// Note: When using Oracle Cloud pre-signed URLs, the endpoint already includes the namespace and bucket path.
-// In that case, set the endpoint correctly to avoid pathing issues.
 const DEFAULT_S3_ENDPOINT = "https://objectstorage.ap-chuncheon-1.oraclecloud.com";
+const DEFAULT_S3_BUCKET = "";
 const DEFAULT_S3_REGION = "ap-chuncheon-1";
 
 const WEEK_ORDINALS: Record<string, string> = {
@@ -55,10 +57,13 @@ const WEEK_ORDINALS: Record<string, string> = {
 
 interface Options {
   input: string;
+  outputDir: string;
   model: string;
   hostVoice: string;
   reporterVoice: string;
+  useS3: boolean;
   s3Endpoint: string;
+  s3Bucket: string;
   s3Region: string;
   s3AccessKey?: string;
   s3SecretKey?: string;
@@ -67,20 +72,26 @@ interface Options {
 function parseArgs(argv: string[]): Options {
   const opts: Options = {
     input: DEFAULT_INPUT,
+    outputDir: DEFAULT_OUTPUT_DIR,
     model: process.env.GEMINI_TTS_MODEL ?? DEFAULT_MODEL,
     hostVoice: process.env.HOST_VOICE ?? DEFAULT_HOST_VOICE,
     reporterVoice: process.env.REPORTER_VOICE ?? DEFAULT_REPORTER_VOICE,
+    useS3: process.env.USE_S3 === "true",
     s3Endpoint: process.env.S3_ENDPOINT ?? DEFAULT_S3_ENDPOINT,
+    s3Bucket: process.env.S3_BUCKET ?? DEFAULT_S3_BUCKET,
     s3Region: process.env.S3_REGION ?? DEFAULT_S3_REGION,
     s3AccessKey: process.env.S3_ACCESS_KEY,
     s3SecretKey: process.env.S3_SECRET_KEY,
   };
   for (const a of argv) {
     if (a.startsWith("--input=")) opts.input = a.slice("--input=".length);
+    else if (a.startsWith("--output=")) opts.outputDir = a.slice("--output=".length);
     else if (a.startsWith("--model=")) opts.model = a.slice("--model=".length);
     else if (a.startsWith("--host-voice=")) opts.hostVoice = a.slice("--host-voice=".length);
     else if (a.startsWith("--reporter-voice=")) opts.reporterVoice = a.slice("--reporter-voice=".length);
+    else if (a.startsWith("--use-s3")) opts.useS3 = true;
     else if (a.startsWith("--s3-endpoint=")) opts.s3Endpoint = a.slice("--s3-endpoint=".length);
+    else if (a.startsWith("--s3-bucket=")) opts.s3Bucket = a.slice("--s3-bucket=".length);
     else if (a.startsWith("--s3-region=")) opts.s3Region = a.slice("--s3-region=".length);
   }
   return opts;
@@ -261,48 +272,25 @@ async function uploadToS3(
   wav: Buffer,
   filename: string,
   opts: Options,
-): Promise<{ success: boolean; url?: string; error?: string }> {
-  try {
-    // If S3_ENDPOINT from .env is a pre-signed URL, use it directly
-    const endpoint = opts.s3Endpoint;
-    const isPresignedUrl = endpoint.includes("/p/") && endpoint.includes("/n/");
-    
-    if (isPresignedUrl) {
-      // Oracle Cloud pre-signed URL: append filename to the endpoint
-      const uploadUrl = endpoint.endsWith("/") ? endpoint + filename : endpoint + "/" + filename;
-      const response = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: new Uint8Array(wav),
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
-      
-      // Return the URL without the trailing filename since the pre-signed URL is already the bucket path
-      const url = endpoint.endsWith("/") ? endpoint + filename : endpoint + "/" + filename;
-      return { success: true, url };
-    } else {
-      // For non-pre-signed URLs, use fetch with the endpoint
-      const uploadUrl = endpoint.endsWith("/") ? endpoint + filename : endpoint + "/" + filename;
-      const response = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: new Uint8Array(wav),
-      });
+): Promise<string> {
+  const s3Client = new S3Client({
+    region: opts.s3Region,
+    endpoint: opts.s3Endpoint,
+    credentials:
+      opts.s3AccessKey && opts.s3SecretKey
+        ? { accessKeyId: opts.s3AccessKey, secretAccessKey: opts.s3SecretKey }
+        : undefined,
+  });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
+  const command = new PutObjectCommand({
+    Bucket: opts.s3Bucket,
+    Key: filename,
+    Body: wav,
+    ContentType: "audio/wav",
+  });
 
-      const url = uploadUrl;
-      return { success: true, url };
-    }
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    return { success: false, error: errorMsg };
-  }
+  await s3Client.send(command);
+  return `${opts.s3Endpoint}/${opts.s3Bucket}/${filename}`;
 }
 
 /** Synthesize, retrying transient API errors and honoring RetryInfo delays. */
@@ -336,6 +324,12 @@ async function synthesizeWithRetry(
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
+  const key = await loadApiKey();
+  if (!key) {
+    console.error("[news_builder] ERROR: GEMINI_API_KEY not found in .env or environment.");
+    process.exit(1);
+  }
+
   let scenario: string;
   try {
     scenario = await fsp.readFile(opts.input, "utf8");
@@ -359,7 +353,7 @@ async function main() {
   );
 
   const { mimeType, data } = await synthesizeWithRetry(
-    process.env.GEMINI_API_KEY || "",
+    key,
     opts.model,
     opts.hostVoice,
     opts.reporterVoice,
@@ -367,17 +361,19 @@ async function main() {
   );
 
   const filename = `${(await weekPrefix(opts.input)) ?? "full_news"}_full_news.wav`;
-  const result = await uploadToS3(data, filename, opts);
-  
-  if (result.success && result.url) {
+
+  if (opts.useS3) {
+    const url = await uploadToS3(data, filename, opts);
     console.log(
-      `[news_builder] ✓ Storage upload SUCCESS: ${result.url} (${data.length} bytes, ${mimeType})`,
+      `[news_builder] ✓ Storage upload SUCCESS: ${url} (${data.length} bytes, ${mimeType})`,
     );
   } else {
-    console.error(
-      `[news_builder] ✗ Storage upload FAILED: ${result.error}`,
+    await fsp.mkdir(opts.outputDir, { recursive: true });
+    const outPath = path.join(opts.outputDir, filename);
+    fs.writeFileSync(outPath, data);
+    console.log(
+      `[news_builder] ✓ Saved locally: ${outPath} (${data.length} bytes, ${mimeType})`,
     );
-    process.exit(1);
   }
 }
 
