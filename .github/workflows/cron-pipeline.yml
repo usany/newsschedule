@@ -3,7 +3,7 @@ name: News pipeline (cron)
 on:
   schedule:
     # Monday 11:11 UTC (one hour from now). GitHub cron is always UTC.
-    - cron: "15 10 * * 1"
+    - cron: "14 10 * * 1"
   workflow_dispatch:
     inputs:
       week:
