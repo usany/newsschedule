@@ -27,7 +27,7 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       # GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL }}
       # USE_S3: ${{ vars.USE_S3 }}
-      S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+      S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
       # S3_BUCKET: ${{ vars.S3_BUCKET }}
       # S3_REGION: ${{ vars.S3_REGION }}
       # S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
