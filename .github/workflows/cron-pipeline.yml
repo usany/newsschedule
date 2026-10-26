@@ -33,7 +33,7 @@ jobs:
       # S3_REGION: ${{ vars.S3_REGION }}
       # S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
       # S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-      PYTHON: ${{ github.workspace }}/.venv/bin/python
+      # PYTHON: ${{ github.workspace }}/.venv/bin/python
     steps:
       - uses: actions/checkout@v4
 
