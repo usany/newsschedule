@@ -266,8 +266,11 @@ async function uploadToS3(
   filename: string,
   endpoint: string,
 ): Promise<string> {
+  // Strip any leading/trailing slashes so the object is stored directly at
+  // the bucket/FAR root instead of under a `/` folder.
+  const cleanName = filename.replace(/^\/+/, "").replace(/\/+$/, "");
   const base = endpoint.endsWith("/") ? endpoint : endpoint + "/";
-  const uploadUrl = base + filename;
+  const uploadUrl = base + cleanName;
 
   const response = await fetch(uploadUrl, {
     method: "PUT",
