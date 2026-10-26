@@ -33,7 +33,7 @@ const DEFAULT_INPUT = path.join(WORK, "01_notice.md");
 const DEFAULT_OUTPUT = path.join(WORK, "03_news_scenario.md");
 
 // Gemini model to use. Override via GEMINI_MODEL or --model.
-const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.8-flash";
+const DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
 
 function parseArgs(argv: string[]) {
   const args: { input: string; output: string; model: string } = {
