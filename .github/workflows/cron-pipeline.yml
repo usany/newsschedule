@@ -26,7 +26,6 @@ jobs:
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       # GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL }}
-      # OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
       # USE_S3: ${{ vars.USE_S3 }}
       S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
       # S3_BUCKET: ${{ vars.S3_BUCKET }}
@@ -56,9 +55,6 @@ jobs:
 
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
-
-      - name: Install opencode CLI (used by @opencode-ai/sdk)
-        run: pnpm add -g --allow-build=opencode-ai opencode-ai
 
       - name: Install easyocr
         if: ${{ !inputs.no_ocr }}
