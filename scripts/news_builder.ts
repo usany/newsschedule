@@ -222,7 +222,7 @@ async function synthesizeMultiSpeaker(
     },
     body: JSON.stringify(payload),
     // Prevent silent stalls on CI runners; fail loudly so retry kicks in.
-    signal: AbortSignal.timeout(180_000),
+    // signal: AbortSignal.timeout(180_000),
   });
 
   if (!response.ok) {
