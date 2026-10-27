@@ -221,6 +221,8 @@ async function synthesizeMultiSpeaker(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    // Prevent silent stalls on CI runners; fail loudly so retry kicks in.
+    signal: AbortSignal.timeout(180_000),
   });
 
   if (!response.ok) {
@@ -230,29 +232,34 @@ async function synthesizeMultiSpeaker(
 
   const responseJson = await response.json() as any;
 
-  // Extract audio from the response steps
-  let audioData: string | null = null;
+  // Extract audio from ALL response steps. The interactions API may split a
+  // long generation across multiple `model_output` steps (especially under
+  // load/latency, e.g. on GitHub Actions runners). Taking only the first step
+  // truncates the scenario, which is why the audio "doesn't finish" in CI.
+  const audioChunks: Buffer[] = [];
   if (responseJson.steps && Array.isArray(responseJson.steps)) {
     for (const step of responseJson.steps) {
       if (step.type === "model_output" && step.content) {
         for (const content of step.content) {
           if (content.type === "audio" && content.data) {
-            audioData = content.data;
-            break;
+            audioChunks.push(Buffer.from(content.data, "base64"));
           }
         }
-        if (audioData) break;
       }
     }
   }
 
-  if (!audioData) {
+  if (audioChunks.length === 0) {
     throw new Error("Gemini API returned no audio data in response");
   }
 
+  console.log(
+    `[news_builder] synthesized ${audioChunks.length} audio step(s) (total ${audioChunks.reduce((n, b) => n + b.length, 0)} bytes)`,
+  );
+
   return {
-    mimeType: "audio/wav",
-    data: Buffer.from(audioData, "base64"),
+    mimeType: audioChunks.length === 1 ? "audio/wav" : "audio/wav",
+    data: Buffer.concat(audioChunks),
   };
 }
 
